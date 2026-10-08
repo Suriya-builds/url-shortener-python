@@ -1,0 +1,19 @@
+# Lint settings for this project.
+#
+# E, F and W are the standard checks: real errors, undefined names, unused
+# imports. If ruff reports something here, it is a genuine problem.
+#
+# The ignores below are deliberate, and are not you cutting corners:
+#
+#   BLE001  /health catches bare Exception on purpose. It must REPORT that
+#           Postgres or Redis is unreachable rather than crash, and the
+#           exception type differs between the two drivers.
+#   E501    long lines are allowed up to 100 characters (see line-length).
+#
+# Adding rules is encouraged. Removing them to make CI pass is not.
+
+line-length = 100
+
+[lint]
+select = ["E", "F", "W"]
+ignore = ["BLE001", "E501"]
