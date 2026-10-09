@@ -1,0 +1,128 @@
+```yaml
+version: 2.1
+
+jobs:
+  lint:
+    docker:
+      - image: cimg/python:3.12
+    steps:
+      - checkout
+      - run:
+          name: Install lint tools
+          command: pip install ruff
+      - run:
+          name: Run linter
+          command: ruff check app tests
+
+  unit-tests:
+    docker:
+      - image: cimg/python:3.12
+    steps:
+      - checkout
+      - run:
+          name: Install dependencies
+          command: |
+            pip install -r requirements.txt
+            pip install pytest pytest-cov
+      - run:
+          name: Run unit tests with coverage
+          command: |
+            pytest tests/test_codes.py \
+              --cov=app.codes \
+              --cov-report=term-missing \
+              --cov-fail-under=70
+
+  integration-tests:
+    docker:
+      - image: cimg/python:3.12
+      - image: cimg/postgres:16.0
+        environment:
+          POSTGRES_DB: urlshortener
+          POSTGRES_USER: appuser
+          POSTGRES_PASSWORD: localdevpassword
+      - image: cimg/redis:7.0
+    environment:
+      DATABASE_URL: postgresql://appuser:localdevpassword@localhost:5432/urlshortener
+      REDIS_URL: redis://localhost:6379/0
+    steps:
+      - checkout
+      - run:
+          name: Install system tools
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client redis-tools
+      - run:
+          name: Install Python dependencies
+          command: |
+            pip install -r requirements.txt
+            pip install pytest
+      - run:
+          name: Wait for services and apply migrations
+          command: |
+            for i in $(seq 1 30); do
+              pg_isready -h localhost -U appuser -d urlshortener && break
+              sleep 2
+            done
+            pg_isready -h localhost -U appuser -d urlshortener
+
+            PGPASSWORD=localdevpassword psql \
+              -h localhost -U appuser -d urlshortener \
+              -v ON_ERROR_STOP=1 -f migrations/001_schema.sql
+
+            PGPASSWORD=localdevpassword psql \
+              -h localhost -U appuser -d urlshortener \
+              -v ON_ERROR_STOP=1 -f migrations/002_seed.sql
+
+            for i in $(seq 1 30); do
+              redis-cli -h localhost ping && break
+              sleep 2
+            done
+            redis-cli -h localhost ping
+      - run:
+          name: Run integration tests
+          command: pytest tests/test_integration.py -v
+
+  secret-scan:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - checkout
+      - run:
+          name: Install Gitleaks
+          command: |
+            GITLEAKS_VERSION=8.24.2
+            curl -sSfL \
+              "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+              -o /tmp/gitleaks.tar.gz
+            mkdir -p /tmp/gitleaks
+            tar -xzf /tmp/gitleaks.tar.gz -C /tmp/gitleaks
+            sudo install /tmp/gitleaks/gitleaks /usr/local/bin/gitleaks
+            gitleaks version
+      - run:
+          name: Scan repository for secrets
+          command: gitleaks detect --source . --no-git --redact --exit-code 1
+
+  build-image:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Build Docker image
+          command: docker build -t url-shortener-python:1.0 .
+
+workflows:
+  build-and-test:
+    jobs:
+      - lint
+      - unit-tests
+      - integration-tests
+      - secret-scan
+      - build-image:
+          requires:
+            - lint
+            - unit-tests
+            - integration-tests
+            - secret-scan
+```
