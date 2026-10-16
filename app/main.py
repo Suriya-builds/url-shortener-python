@@ -16,11 +16,7 @@ app = FastAPI(title="url-shortener")
 
 
 def encode_link_id(link_id: int) -> str:
-    """Encode a database ID as a unique short code of at least 3 characters.
-
-    Prefixing the normal encoding with the alphabet's first character keeps
-    the original encoding as a suffix and avoids changing the ID itself.
-    """
+    """Encode a database ID as a short code of at least 3 characters."""
     code = encode(link_id)
     if len(code) < 3:
         code = ALPHABET[0] * (3 - len(code)) + code
@@ -84,7 +80,6 @@ def shorten(payload: dict = Body(...)):
         code = row["code"]
 
     else:
-        # Insert an empty code to obtain a database-generated unique ID.
         row = db.one(
             "INSERT INTO links (code, url) VALUES ('', %s) RETURNING id",
             (url,),
