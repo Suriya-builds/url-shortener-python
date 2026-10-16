@@ -1,0 +1,9 @@
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
