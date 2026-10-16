@@ -1,3 +1,4 @@
+
 version: 2.1
 
 jobs:
@@ -26,7 +27,10 @@ jobs:
           name: Run unit tests with coverage
           command: |
             export PYTHONPATH="$PWD"
-            python -m pytest tests/test_codes.py --cov=app.codes --cov-report=term-missing --cov-fail-under=70
+            python -m pytest tests/test_codes.py \
+              --cov=app.codes \
+              --cov-report=term-missing \
+              --cov-fail-under=70
 
   integration-tests:
     docker:
@@ -61,8 +65,15 @@ jobs:
               sleep 2
             done
             pg_isready -h localhost -U appuser -d urlshortener
-            PGPASSWORD=localdevpassword psql -h localhost -U appuser -d urlshortener -v ON_ERROR_STOP=1 -f migrations/001_schema.sql
-            PGPASSWORD=localdevpassword psql -h localhost -U appuser -d urlshortener -v ON_ERROR_STOP=1 -f migrations/002_seed.sql
+
+            PGPASSWORD=localdevpassword psql \
+              -h localhost -U appuser -d urlshortener \
+              -v ON_ERROR_STOP=1 -f migrations/001_schema.sql
+
+            PGPASSWORD=localdevpassword psql \
+              -h localhost -U appuser -d urlshortener \
+              -v ON_ERROR_STOP=1 -f migrations/002_seed.sql
+
             for i in $(seq 1 30); do
               redis-cli -h localhost ping && break
               sleep 2
@@ -81,7 +92,9 @@ jobs:
           name: Install Gitleaks
           command: |
             GITLEAKS_VERSION=8.24.2
-            curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tar.gz
+            curl -sSfL \
+              "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+              -o /tmp/gitleaks.tar.gz
             mkdir -p /tmp/gitleaks
             tar -xzf /tmp/gitleaks.tar.gz -C /tmp/gitleaks
             sudo install /tmp/gitleaks/gitleaks /usr/local/bin/gitleaks
@@ -90,32 +103,92 @@ jobs:
           name: Scan repository for secrets
           command: gitleaks detect --source . --no-git --redact --exit-code 1
 
-  build-image:
+  build-and-push:
+    parameters:
+      release_tag:
+        type: string
     docker:
       - image: cimg/base:current
     steps:
       - checkout
       - setup_remote_docker
       - run:
+          name: Validate Docker Hub credentials
+          command: |
+            test -n "$DOCKERHUB_USER" || {
+              echo "DOCKERHUB_USER is not configured"
+              exit 1
+            }
+            test -n "$DOCKERHUB_TOKEN" || {
+              echo "DOCKERHUB_TOKEN is not configured"
+              exit 1
+            }
+      - run:
           name: Log in to Docker Hub
           command: |
-            echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+            echo "$DOCKERHUB_TOKEN" |
+              docker login -u "$DOCKERHUB_USER" --password-stdin
       - run:
-          name: Build, tag, and push Docker image
+          name: Build, tag, and push image
+          environment:
+            RELEASE_TAG: << parameters.release_tag >>
           command: |
-            docker build -t "$DOCKERHUB_USERNAME/url-shortener-python:1.0" .
-            docker push "$DOCKERHUB_USERNAME/url-shortener-python:1.0"
+            IMAGE="${DOCKERHUB_USER}/url-shortener-python"
+            SHORT_SHA="$(echo "$CIRCLE_SHA1" | cut -c1-7)"
+            IMMUTABLE_TAG="${CIRCLE_BRANCH}-${SHORT_SHA}"
+
+            docker build \
+              -t "${IMAGE}:${RELEASE_TAG}" \
+              -t "${IMAGE}:${IMMUTABLE_TAG}" .
+
+            docker push "${IMAGE}:${RELEASE_TAG}"
+            docker push "${IMAGE}:${IMMUTABLE_TAG}"
 
 workflows:
-  build-and-test:
+  qa-pipeline:
     jobs:
-      - lint
-      - unit-tests
-      - integration-tests
-      - secret-scan
-      - build-image:
+      - lint:
+          filters:
+            branches:
+              only: main
+      - unit-tests:
+          filters:
+            branches:
+              only: main
+      - integration-tests:
+          filters:
+            branches:
+              only: main
+      - secret-scan:
+          filters:
+            branches:
+              only: main
+      - build-and-push:
+          name: publish-qa-image
+          release_tag: qa
           requires:
             - lint
             - unit-tests
             - integration-tests
             - secret-scan
+          filters:
+            branches:
+              only: main
+
+  staging-pipeline:
+    jobs:
+      - build-and-push:
+          name: publish-stage-image
+          release_tag: stage
+          filters:
+            branches:
+              only: staging
+
+  production-pipeline:
+    jobs:
+      - build-and-push:
+          name: publish-production-image
+          release_tag: prod
+          filters:
+            branches:
+              only: prod
