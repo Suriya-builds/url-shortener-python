@@ -4,7 +4,6 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from . import cache, db
 from .codes import (
-    ALPHABET,
     LinkError,
     encode,
     is_safe,
@@ -13,14 +12,6 @@ from .codes import (
 )
 
 app = FastAPI(title="url-shortener")
-
-
-def encode_link_id(link_id: int) -> str:
-    """Encode a database ID as a short code of at least 3 characters."""
-    code = encode(link_id)
-    if len(code) < 3:
-        code = ALPHABET[0] * (3 - len(code)) + code
-    return code
 
 
 @app.get("/health")
@@ -66,31 +57,60 @@ def shorten(payload: dict = Body(...)):
         except LinkError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-        if db.one("SELECT 1 FROM links WHERE code = %s", (code,)):
-            raise HTTPException(
-                status_code=409,
-                detail=f"{code!r} is already taken",
+        # Let PostgreSQL enforce uniqueness, including concurrent requests.
+        try:
+            row = db.one(
+                "INSERT INTO links (code, url) VALUES (%s, %s) "
+                "RETURNING id, code",
+                (code, url),
             )
+        except Exception as e:
+            # The existing schema uses a unique code constraint.
+            if "unique" in str(e).lower():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{code!r} is already taken",
+                )
+            raise
 
-        row = db.one(
-            "INSERT INTO links (code, url) VALUES (%s, %s) "
-            "RETURNING id, code",
-            (code, url),
-        )
         code = row["code"]
 
     else:
-        row = db.one(
-            "INSERT INTO links (code, url) VALUES ('', %s) RETURNING id",
-            (url,),
-        )
-        code = encode_link_id(row["id"])
+        # Use the database ID as the unique source for generated codes.
+        # Retry if the generated code conflicts with an existing custom code.
+        for _ in range(10):
+            row = db.one(
+                "INSERT INTO links (code, url) VALUES ('', %s) RETURNING id",
+                (url,),
+            )
+            code = encode(row["id"])
 
-        db.query(
-            "UPDATE links SET code = %s WHERE id = %s",
-            (code, row["id"]),
-            fetch=False,
-        )
+            # Preserve the existing encoder; short IDs can produce short codes.
+            # Prefixing with a character keeps the database ID unchanged.
+            if len(code) < 3:
+                code = ("a" * (3 - len(code))) + code
+
+            try:
+                db.query(
+                    "UPDATE links SET code = %s WHERE id = %s",
+                    (code, row["id"]),
+                    fetch=False,
+                )
+                break
+            except Exception as e:
+                if "unique" not in str(e).lower():
+                    raise
+                # Avoid leaving an empty-code row if an update collides.
+                db.query(
+                    "DELETE FROM links WHERE id = %s",
+                    (row["id"],),
+                    fetch=False,
+                )
+        else:
+            raise HTTPException(
+                status_code=503,
+                detail="could not generate a unique short code; retry",
+            )
 
     cache.drop(f"link:{code}")
 
