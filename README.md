@@ -390,7 +390,7 @@ Write your answer in your README. It is worth more marks than the feature.
 
 ## Getting  unstuck
 
-| Symptom | Almost always |
+| Symptom |  Almost always |
 |---|---|
 | `/health` says `postgres: false` | Wrong hostname. In compose the host is the **service name**, not `localhost`. |
 | Page will not load, logs fine | No `ports:` mapping, or bound to `127.0.0.1` not `0.0.0.0`. |
