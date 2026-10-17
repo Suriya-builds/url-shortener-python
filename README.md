@@ -388,7 +388,7 @@ Write your answer in your README. It is worth more marks than the feature.
 
 ---
 
-## Getting unstuck
+## Getting  unstuck
 
 | Symptom | Almost always |
 |---|---|
